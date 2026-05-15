@@ -45,7 +45,7 @@ export class ConfigFileSettingsLoader extends SettingsLoader {
 				if (Object.prototype.hasOwnProperty.call(config, key)) {
 					const propertyKey = key as keyof ConfluenceSettings;
 					const element = config[propertyKey];
-					if (element) {
+					if (element !== undefined && element !== null) {
 						(result as Record<string, unknown>)[propertyKey] = element;
 					}
 				}

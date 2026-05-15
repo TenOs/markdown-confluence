@@ -6,6 +6,8 @@ export type ConfluenceSettings = {
 	folderToPublish: string;
 	contentRoot: string;
 	firstHeadingPageTitle: boolean;
+	plantumlEnabled: boolean;
+	plantumlServerUrl: string;
 };
 
 export const DEFAULT_SETTINGS: ConfluenceSettings = {
@@ -16,4 +18,6 @@ export const DEFAULT_SETTINGS: ConfluenceSettings = {
 	folderToPublish: "Confluence Pages",
 	contentRoot: process.cwd(),
 	firstHeadingPageTitle: false,
+	plantumlEnabled: true,
+	plantumlServerUrl: "https://www.plantuml.com/plantuml",
 };

@@ -57,6 +57,17 @@ export class CommandLineArgumentSettingsLoader extends SettingsLoader {
 				type: "boolean",
 				demandOption: false,
 			})
+			.option("plantumlEnabled", {
+				describe: "Enable rendering of PlantUML code blocks via a PlantUML server.",
+				type: "boolean",
+				demandOption: false,
+			})
+			.option("plantumlServerUrl", {
+				describe:
+					"PlantUML server base URL (default https://www.plantuml.com/plantuml). Source is sent to this server.",
+				type: "string",
+				demandOption: false,
+			})
 			.parseSync();
 
 		return {
@@ -68,6 +79,12 @@ export class CommandLineArgumentSettingsLoader extends SettingsLoader {
 			...(options.contentRoot ? { contentRoot: options.contentRoot } : undefined),
 			...(options.firstHeaderPageTitle
 				? { firstHeadingPageTitle: options.firstHeaderPageTitle }
+				: undefined),
+			...(options.plantumlEnabled !== undefined
+				? { plantumlEnabled: options.plantumlEnabled }
+				: undefined),
+			...(options.plantumlServerUrl
+				? { plantumlServerUrl: options.plantumlServerUrl }
 				: undefined),
 		};
 	}

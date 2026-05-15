@@ -2,6 +2,11 @@ import { CurrentAttachments, UploadedImageData, uploadBuffer, uploadFile } from 
 import { JSONDocNode } from "@atlaskit/editor-json-transformer";
 import { LoaderAdaptor, RequiredConfluenceClient } from "../adaptors";
 
+export interface ChartData {
+	name: string;
+	data: string;
+}
+
 export interface PublisherFunctions {
 	uploadBuffer(uploadFilename: string, fileBuffer: Buffer): Promise<UploadedImageData | null>;
 	uploadFile(fileNameToUpload: string): Promise<UploadedImageData | null>;

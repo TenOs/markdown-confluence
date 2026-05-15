@@ -1,20 +1,17 @@
 import { filter, traverse } from "@atlaskit/adf-utils/traverse";
 import { UploadedImageData } from "../Attachments";
 import { JSONDocNode } from "@atlaskit/editor-json-transformer";
-import { ADFProcessingPlugin, PublisherFunctions } from "./types";
+import { ADFProcessingPlugin, ChartData, PublisherFunctions } from "./types";
 import { ADFEntity } from "@atlaskit/adf-utils/types";
 import SparkMD5 from "spark-md5";
+
+export type { ChartData } from "./types";
 
 export function getMermaidFileName(mermaidContent: string | undefined) {
 	const mermaidText = mermaidContent ?? "flowchart LR\nid1[Missing Chart]";
 	const pathMd5 = SparkMD5.hash(mermaidText);
 	const uploadFilename = `RenderedMermaidChart-${pathMd5}.png`;
 	return { uploadFilename, mermaidText };
-}
-
-export interface ChartData {
-	name: string;
-	data: string;
 }
 
 export interface MermaidRenderer {

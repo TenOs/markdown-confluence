@@ -26,7 +26,11 @@ export class AutoSettingsLoader extends SettingsLoader {
 				const propertyKey = key as keyof ConfluenceSettings;
 				if (Object.prototype.hasOwnProperty.call(partialSettings, propertyKey)) {
 					const element = partialSettings[propertyKey];
-					if (element && typeof element === typeof DEFAULT_SETTINGS[propertyKey]) {
+					if (
+						element !== undefined &&
+						element !== null &&
+						typeof element === typeof DEFAULT_SETTINGS[propertyKey]
+					) {
 						settings = {
 							...settings,
 							[propertyKey]: element,
