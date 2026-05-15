@@ -1,14 +1,17 @@
 import { Plugin, Notice, MarkdownView, Workspace, loadMermaid } from "obsidian";
 import {
+	ADFProcessingPlugin,
 	ConfluenceUploadSettings,
 	Publisher,
 	ConfluencePageConfig,
 	StaticSettingsLoader,
 	renderADFDoc,
 	MermaidRendererPlugin,
+	PlantumlRendererPlugin,
 	UploadAdfFileResult,
 } from "@markdown-confluence/lib";
 import { ElectronMermaidRenderer } from "@markdown-confluence/mermaid-electron-renderer";
+import { HttpPlantumlRenderer } from "@markdown-confluence/plantuml-renderer";
 import { ConfluenceSettingTab } from "./ConfluenceSettingTab";
 import ObsidianAdaptor from "./adaptors/obsidian";
 import { CompletedModal } from "./CompletedModal";
@@ -86,10 +89,22 @@ export default class ConfluencePlugin extends Plugin {
 			},
 		});
 
-		const settingsLoader = new StaticSettingsLoader(this.settings);
-		this.publisher = new Publisher(this.adaptor, settingsLoader, confluenceClient, [
+		const plugins: ADFProcessingPlugin<unknown, unknown>[] = [
 			new MermaidRendererPlugin(mermaidRenderer),
-		]);
+		];
+
+		if (this.settings.plantumlEnabled && this.settings.plantumlServerUrl) {
+			plugins.push(
+				new PlantumlRendererPlugin(
+					new HttpPlantumlRenderer({
+						serverUrl: this.settings.plantumlServerUrl,
+					}),
+				),
+			);
+		}
+
+		const settingsLoader = new StaticSettingsLoader(this.settings);
+		this.publisher = new Publisher(this.adaptor, settingsLoader, confluenceClient, plugins);
 	}
 
 	async getMermaidItems() {
