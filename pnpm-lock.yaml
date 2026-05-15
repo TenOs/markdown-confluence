@@ -32,6 +32,9 @@ importers:
       '@markdown-confluence/mermaid-puppeteer-renderer':
         specifier: workspace:5.5.2
         version: link:../mermaid-puppeteer-renderer
+      '@markdown-confluence/plantuml-renderer':
+        specifier: workspace:5.5.2
+        version: link:../plantuml-renderer
       boxen:
         specifier: 8.0.1
         version: 8.0.1

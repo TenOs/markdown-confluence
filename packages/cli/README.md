@@ -115,6 +115,8 @@ The CLI, Docker image, and GitHub Action all read the same global settings. You 
 | `folderToPublish` | `FOLDER_TO_PUBLISH` | `--enableFolder`, `-f` | The folder, relative to `contentRoot`, whose Markdown files default to `connie-publish: true`. Use `.` to publish all Markdown files under `contentRoot`. |
 | `contentRoot` | `CONFLUENCE_CONTENT_ROOT` | `--contentRoot`, `--cr` | The root directory to scan for Markdown files and referenced content. |
 | `firstHeadingPageTitle` | `CONFLUENCE_FIRST_HEADING_PAGE_TITLE` | `--firstHeaderPageTitle`, `--fh` | When `true`, use the first heading as the page title when `connie-title` is not set. |
+| `plantumlEnabled` | `CONFLUENCE_PLANTUML_ENABLED` | `--plantumlEnabled` | When `true` (default), code blocks tagged `plantuml`, `puml`, or `uml` are rendered to images via the configured PlantUML server. |
+| `plantumlServerUrl` | `CONFLUENCE_PLANTUML_SERVER_URL` | `--plantumlServerUrl` | PlantUML server base URL. Defaults to `https://www.plantuml.com/plantuml` — diagram source is sent to that public server, so for private content run a self-hosted server (see [PlantUML support](#plantuml-support)). |
 
 ### `folderToPublish` vs `contentRoot`
 
@@ -146,6 +148,25 @@ This scans `phil` and publishes only files under `phil/thingy`:
   "folderToPublish": "thingy"
 }
 ```
+
+### PlantUML support
+
+Fenced code blocks tagged `plantuml`, `puml`, or `uml` are rendered to PNG via a PlantUML server and uploaded as page attachments.
+
+```plantuml
+@startuml
+Alice -> Bob
+@enduml
+```
+
+By default the publisher talks to the public server at `https://www.plantuml.com/plantuml`, which means **diagram source is sent to a third party**. For private diagrams run your own server and point `plantumlServerUrl` at it:
+
+```bash
+docker run -d --name plantuml -p 8080:8080 plantuml/plantuml-server:jetty
+export CONFLUENCE_PLANTUML_SERVER_URL=http://localhost:8080
+```
+
+To disable PlantUML rendering entirely (e.g. to leave the source in the page as a code block), set `plantumlEnabled: false` or `CONFLUENCE_PLANTUML_ENABLED=false`.
 
 ### Per-page Frontmatter
 

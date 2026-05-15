@@ -5,12 +5,15 @@ process.setMaxListeners(Infinity);
 import chalk from "chalk";
 import boxen from "boxen";
 import {
+	ADFProcessingPlugin,
 	AutoSettingsLoader,
 	FileSystemAdaptor,
-	Publisher,
 	MermaidRendererPlugin,
+	PlantumlRendererPlugin,
+	Publisher,
 } from "@markdown-confluence/lib";
 import { PuppeteerMermaidRenderer } from "@markdown-confluence/mermaid-puppeteer-renderer";
+import { HttpPlantumlRenderer } from "@markdown-confluence/plantuml-renderer";
 import { ConfluenceClient } from "confluence.js";
 
 // Define the main function
@@ -39,9 +42,24 @@ async function main() {
 		},
 	});
 
-	const publisher = new Publisher(adaptor, settingLoader, confluenceClient, [
+	const plugins: ADFProcessingPlugin<unknown, unknown>[] = [
 		new MermaidRendererPlugin(new PuppeteerMermaidRenderer()),
-	]);
+	];
+
+	if (settings.plantumlEnabled) {
+		if (!settings.plantumlServerUrl) {
+			throw new Error(
+				"PlantUML rendering is enabled but plantumlServerUrl is empty. Set CONFLUENCE_PLANTUML_SERVER_URL, --plantumlServerUrl, or plantumlServerUrl in .markdown-confluence.json — or set plantumlEnabled to false.",
+			);
+		}
+		plugins.push(
+			new PlantumlRendererPlugin(
+				new HttpPlantumlRenderer({ serverUrl: settings.plantumlServerUrl }),
+			),
+		);
+	}
+
+	const publisher = new Publisher(adaptor, settingLoader, confluenceClient, plugins);
 
 	const publishFilter = "";
 	const results = await publisher.publish(publishFilter);
