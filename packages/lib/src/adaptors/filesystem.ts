@@ -185,6 +185,19 @@ export class FileSystemAdaptor implements LoaderAdaptor {
 		return false;
 	}
 
+	async readText(searchPath: string, referencedFromFilePath: string): Promise<string | false> {
+		const absoluteFilePath = await this.findClosestFile(
+			searchPath,
+			path.dirname(path.join(this.settings.contentRoot, referencedFromFilePath)),
+		);
+
+		if (absoluteFilePath) {
+			return await fs.readFile(absoluteFilePath, "utf-8");
+		}
+
+		return false;
+	}
+
 	private async findClosestFile(
 		fileName: string,
 		startingDirectory: string,

@@ -107,6 +107,15 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 
 		return false;
 	}
+
+	async readText(path: string, referencedFromFilePath: string): Promise<string | false> {
+		const target = this.metadataCache.getFirstLinkpathDest(path, referencedFromFilePath);
+		if (target) {
+			return await this.vault.read(target);
+		}
+
+		return false;
+	}
 	async updateMarkdownValues(
 		absoluteFilePath: string,
 		values: Partial<ConfluencePageConfig.ConfluencePerPageAllValues>,

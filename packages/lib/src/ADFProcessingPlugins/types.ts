@@ -18,6 +18,19 @@ export interface ADFProcessingPlugin<E, T> {
 	load(adf: JSONDocNode, transformedItems: T, supportFunctions: PublisherFunctions): JSONDocNode;
 }
 
+export interface ADFPreprocessorContext {
+	adaptor: LoaderAdaptor;
+	pageFilePath: string;
+}
+
+// Runs before the main ADF processing pipeline. Use this for transforms that
+// need async I/O (file reads etc.) before extraction starts. The mainline
+// ADFProcessingPlugin contract is sync extract -> async transform -> sync load,
+// which can't read files in extract().
+export interface ADFPreprocessor {
+	preprocess(adf: JSONDocNode, ctx: ADFPreprocessorContext): Promise<JSONDocNode>;
+}
+
 export function createPublisherFunctions(
 	confluenceClient: RequiredConfluenceClient,
 	adaptor: LoaderAdaptor,
@@ -74,4 +87,16 @@ export async function executeADFProcessingPipeline(
 	}, adf);
 
 	return finalADF;
+}
+
+export async function executeADFPreprocessors(
+	preprocessors: ADFPreprocessor[],
+	adf: JSONDocNode,
+	ctx: ADFPreprocessorContext,
+): Promise<JSONDocNode> {
+	let current = adf;
+	for (const preprocessor of preprocessors) {
+		current = await preprocessor.preprocess(current, ctx);
+	}
+	return current;
 }

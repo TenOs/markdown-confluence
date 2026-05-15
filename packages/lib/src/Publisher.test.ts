@@ -232,6 +232,10 @@ class InMemoryAdaptor implements LoaderAdaptor {
 	async readBinary(_path: string, _referencedFromFilePath: string): Promise<false | BinaryFile> {
 		throw new Error("Method not implemented.");
 	}
+
+	async readText(_path: string, _referencedFromFilePath: string): Promise<string | false> {
+		throw new Error("Method not implemented.");
+	}
 }
 
 confluenceIntegrationTest(

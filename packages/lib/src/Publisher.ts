@@ -1,8 +1,9 @@
 import { JSONDocNode } from "@atlaskit/editor-json-transformer";
-import { AlwaysADFProcessingPlugins } from "./ADFProcessingPlugins";
+import { AlwaysADFPreprocessors, AlwaysADFProcessingPlugins } from "./ADFProcessingPlugins";
 import {
 	ADFProcessingPlugin,
 	createPublisherFunctions,
+	executeADFPreprocessors,
 	executeADFProcessingPipeline,
 } from "./ADFProcessingPlugins/types";
 import { adfEqual } from "./AdfEqual";
@@ -240,9 +241,16 @@ export class Publisher {
 			adfFile.absoluteFilePath,
 			currentAttachments,
 		);
+
+		const preprocessedAdf = await executeADFPreprocessors(
+			AlwaysADFPreprocessors,
+			adfFile.contents,
+			{ adaptor: this.adaptor, pageFilePath: adfFile.absoluteFilePath },
+		);
+
 		const adfToUpload = await executeADFProcessingPipeline(
 			this.adfProcessingPlugins,
-			adfFile.contents,
+			preprocessedAdf,
 			supportFunctions,
 		);
 
