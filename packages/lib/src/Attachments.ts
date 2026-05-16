@@ -1,6 +1,121 @@
 import SparkMD5 from "spark-md5";
+import FormData from "form-data";
+import { Api } from "confluence.js";
 import { RequiredConfluenceClient, LoaderAdaptor } from "./adaptors";
 import sizeOf from "image-size";
+
+// Confluence Cloud now rejects multipart attachment uploads with
+// "Must have the same number of attachment files and minorEdits flags,
+// or not have any minorEdits flags at all" when the legacy `minorEdit`
+// field is present. confluence.js@2.1.0's createOrUpdateAttachments and
+// createAttachments both unconditionally append `minorEdit`, so we
+// override them on the prototype to omit that field.
+//
+// The override runs once at module load. It mirrors the upstream method
+// body but without the minorEdit form field.
+type AttachmentEntry = {
+	file: Buffer | NodeJS.ReadableStream | string;
+	filename: string;
+	contentType?: string;
+	comment?: string;
+};
+
+type CreateOrUpdateParams = {
+	id: string;
+	attachments: AttachmentEntry | AttachmentEntry[];
+	status?: string;
+};
+
+type ContentAttachmentsInternal = {
+	client: {
+		sendRequest: (config: unknown, callback?: unknown) => Promise<unknown>;
+	};
+};
+
+function buildAttachmentForm(parameters: CreateOrUpdateParams): FormData {
+	const formData = new FormData();
+	const attachments = Array.isArray(parameters.attachments)
+		? parameters.attachments
+		: [parameters.attachments];
+
+	for (const attachment of attachments) {
+		formData.append("file", attachment.file, {
+			filename: attachment.filename,
+			...(attachment.contentType ? { contentType: attachment.contentType } : {}),
+		});
+		// `comment` is intentionally NOT sent: Confluence Cloud's stricter
+		// validation rejects multipart attachment uploads when the comment
+		// field is present in a form that doesn't fit its expected shape
+		// ("Must be same number of attachment files and comments"). We pay
+		// for this by losing one signal for content-hash dedup of cross-page
+		// attachments — the page-level hash check in uploadBuffer/uploadFile
+		// still works for re-uploads of the same page.
+	}
+
+	return formData;
+}
+
+function patchContentAttachmentsOnce(): void {
+	const proto = Api.ContentAttachments.prototype as unknown as {
+		__minorEditPatched?: boolean;
+		createOrUpdateAttachments: (
+			this: ContentAttachmentsInternal,
+			parameters: CreateOrUpdateParams,
+			callback?: unknown,
+		) => Promise<unknown>;
+		createAttachments: (
+			this: ContentAttachmentsInternal,
+			parameters: CreateOrUpdateParams,
+			callback?: unknown,
+		) => Promise<unknown>;
+	};
+
+	if (proto.__minorEditPatched) {
+		return;
+	}
+
+	proto.createOrUpdateAttachments = async function (
+		this: ContentAttachmentsInternal,
+		parameters: CreateOrUpdateParams,
+		callback?: unknown,
+	) {
+		const formData = buildAttachmentForm(parameters);
+		const config = {
+			url: `/api/content/${parameters.id}/child/attachment`,
+			method: "PUT",
+			headers: {
+				"X-Atlassian-Token": "no-check",
+				"Content-Type": "multipart/form-data",
+				...formData.getHeaders?.(),
+			},
+			params: { status: parameters.status },
+			data: formData,
+		};
+		return this.client.sendRequest(config, callback);
+	};
+
+	proto.createAttachments = async function (
+		this: ContentAttachmentsInternal,
+		parameters: CreateOrUpdateParams,
+		callback?: unknown,
+	) {
+		const formData = buildAttachmentForm(parameters);
+		const config = {
+			url: `/api/content/${parameters.id}/child/attachment`,
+			method: "POST",
+			headers: {
+				"X-Atlassian-Token": "no-check",
+				"Content-Type": "multipart/form-data",
+				...formData.getHeaders?.(),
+			},
+			params: { status: parameters.status },
+			data: formData,
+		};
+		return this.client.sendRequest(config, callback);
+	};
+
+	proto.__minorEditPatched = true;
+}
 
 export type ConfluenceImageStatus = "existing" | "uploaded";
 
@@ -36,6 +151,7 @@ export async function uploadBuffer(
 		{ filehash: string; attachmentId: string; collectionName: string }
 	>,
 ): Promise<UploadedImageData | null> {
+	patchContentAttachmentsOnce();
 	const spark = new SparkMD5.ArrayBuffer();
 	const currentFileMd5 = spark.append(toArrayBuffer(fileBuffer)).end();
 	const imageSize = await sizeOf(fileBuffer);
@@ -58,7 +174,6 @@ export async function uploadBuffer(
 			{
 				file: fileBuffer,
 				filename: uploadFilename,
-				minorEdit: false,
 				comment: currentFileMd5,
 				contentType: "image/png",
 			},
@@ -91,6 +206,7 @@ export async function uploadFile(
 	fileNameToUpload: string,
 	currentAttachments: CurrentAttachments,
 ): Promise<UploadedImageData | null> {
+	patchContentAttachmentsOnce();
 	let fileNameForUpload = fileNameToUpload;
 	let testing = await adaptor.readBinary(fileNameForUpload, pageFilePath);
 	if (!testing) {
@@ -127,7 +243,6 @@ export async function uploadFile(
 				{
 					file: imageBuffer,
 					filename: uploadFilename,
-					minorEdit: false,
 					comment: currentFileMd5,
 				},
 			],
