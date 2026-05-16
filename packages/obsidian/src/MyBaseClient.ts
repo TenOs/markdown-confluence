@@ -100,14 +100,44 @@ export class MyBaseClient implements Client {
 				delete requestConfig?.headers["content-type"];
 			}
 
-			const params = this.paramSerializer(requestConfig.params);
+			const params = requestConfig.params ? this.paramSerializer(requestConfig.params) : "";
 
 			const requestContentType =
 				(requestConfig.headers ?? {})["Content-Type"]?.toString() ?? "application/json";
 
-			const requestBody = requestContentType.startsWith("multipart/form-data")
-				? [requestConfig.data.getHeaders(), requestConfig.data.getBuffer().buffer]
-				: [{}, JSON.stringify(requestConfig.data)];
+			const isMultipart = requestContentType.startsWith("multipart/form-data");
+			const data = requestConfig.data;
+			let requestBody: [Record<string, string>, ArrayBuffer | string];
+			if (isMultipart) {
+				if (data instanceof ArrayBuffer) {
+					requestBody = [{}, data];
+				} else if (
+					data &&
+					typeof (data as { buffer?: ArrayBufferLike }).buffer === "object"
+				) {
+					// Buffer / Uint8Array — the underlying ArrayBuffer is what
+					// Obsidian's requestUrl wants as `body`.
+					const view = data as Uint8Array;
+					requestBody = [
+						{},
+						view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength),
+					];
+				} else if (
+					data &&
+					typeof (data as { getBuffer?: () => Buffer }).getBuffer === "function"
+				) {
+					// form-data instance (legacy path).
+					const fd = data as {
+						getHeaders: () => Record<string, string>;
+						getBuffer: () => Buffer;
+					};
+					requestBody = [fd.getHeaders(), fd.getBuffer().buffer];
+				} else {
+					throw new Error("Obsidian client received multipart data of unsupported shape");
+				}
+			} else {
+				requestBody = [{}, JSON.stringify(data)];
+			}
 
 			const modifiedRequestConfig = {
 				...requestConfig,

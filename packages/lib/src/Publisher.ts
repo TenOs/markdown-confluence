@@ -316,10 +316,18 @@ export class Publisher {
 			console.log(JSON.stringify(existingPageData.adfContent, replacer));
 			console.log(JSON.stringify(adfToUpload, replacer));
 
-			const updateContentDetails = {
+			// Each attachment upload bumps the page version on the server, so
+			// pageVersionNumber (captured before attachment uploads) is stale
+			// by the time we get here. Re-fetch the current version, but
+			// because Confluence's read-after-write can lag (CDN/replica),
+			// the GET sometimes returns a version that's still behind
+			// master — in which case the update fails with "version more
+			// than the previous version". Retry on that error by
+			// re-fetching and bumping again.
+			const buildUpdateDetails = (versionNumber: number) => ({
 				...newPageDetails,
 				id: adfFile.pageId,
-				version: { number: pageVersionNumber + 1 },
+				version: { number: versionNumber + 1 },
 				body: {
 					// eslint-disable-next-line @typescript-eslint/naming-convention
 					atlas_doc_format: {
@@ -327,8 +335,57 @@ export class Publisher {
 						representation: "atlas_doc_format",
 					},
 				},
+			});
+
+			const fetchCurrentVersion = async (): Promise<number> => {
+				const currentPage = await this.confluenceClient.content.getContentById({
+					id: adfFile.pageId,
+					expand: ["version"],
+				});
+				return currentPage.version?.number ?? pageVersionNumber;
 			};
-			await this.confluenceClient.content.updateContent(updateContentDetails);
+
+			let attempt = 0;
+			let nextVersion = await fetchCurrentVersion();
+			while (true) {
+				try {
+					await this.confluenceClient.content.updateContent(
+						buildUpdateDetails(nextVersion),
+					);
+					break;
+				} catch (e: unknown) {
+					// Different clients surface the version-conflict error
+					// differently: confluence.js (CLI) wraps Confluence's
+					// JSON in `e.message`, while the Obsidian custom HTTP
+					// client throws `{ message: "Received a 500", response:
+					// { status, data } }` where `data` is the JSON string.
+					// Check both.
+					const messageBlobs: string[] = [];
+					if (e instanceof Error) {
+						messageBlobs.push(e.message);
+					}
+					const maybeResponse = (e as { response?: { data?: unknown; status?: number } })
+						.response;
+					if (maybeResponse?.data && typeof maybeResponse.data === "string") {
+						messageBlobs.push(maybeResponse.data);
+					}
+					const blob = messageBlobs.join(" ");
+					const isVersionConflict =
+						blob.includes("more than the previous version") ||
+						blob.includes("optimistic lock");
+					if (!isVersionConflict || attempt >= 3) {
+						throw e;
+					}
+					attempt++;
+					console.log(
+						`Confluence version conflict on ${adfFile.absoluteFilePath}, retrying with version ${nextVersion + 2} (attempt ${attempt})`,
+					);
+					// Bump past whatever we just tried — Confluence's GET may
+					// still be behind, so jumping ahead is more reliable than
+					// re-fetching the same stale value.
+					nextVersion += 1;
+				}
+			}
 		}
 
 		const getLabelsForContent = {

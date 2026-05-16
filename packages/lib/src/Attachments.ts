@@ -1,120 +1,81 @@
 import SparkMD5 from "spark-md5";
-import FormData from "form-data";
-import { Api } from "confluence.js";
 import { RequiredConfluenceClient, LoaderAdaptor } from "./adaptors";
 import sizeOf from "image-size";
 
-// Confluence Cloud now rejects multipart attachment uploads with
-// "Must have the same number of attachment files and minorEdits flags,
-// or not have any minorEdits flags at all" when the legacy `minorEdit`
-// field is present. confluence.js@2.1.0's createOrUpdateAttachments and
-// createAttachments both unconditionally append `minorEdit`, so we
-// override them on the prototype to omit that field.
-//
-// The override runs once at module load. It mirrors the upstream method
-// body but without the minorEdit form field.
-type AttachmentEntry = {
-	file: Buffer | NodeJS.ReadableStream | string;
+// We sidestep confluence.js's createOrUpdateAttachments entirely. Its built-in
+// multipart serialization adds fields (`minorEdit`, third-arg filenames) that
+// Confluence Cloud's stricter validation now rejects with various 4xx/5xx
+// errors. Building the body ourselves and dispatching through the existing
+// client transport gives one code path that works in both Node (CLI) and
+// Electron (Obsidian's `requestUrl`-backed client).
+
+type AttachmentInput = {
+	file: Buffer;
 	filename: string;
 	contentType?: string;
-	comment?: string;
 };
 
-type CreateOrUpdateParams = {
-	id: string;
-	attachments: AttachmentEntry | AttachmentEntry[];
-	status?: string;
+// confluence.js's Api.ContentAttachments has a private `client` field with
+// a sendRequest method. TypeScript hides it; we reach in via untyped indexing.
+type InternalSendRequest = (
+	config: {
+		url: string;
+		method: string;
+		headers?: Record<string, string>;
+		params?: Record<string, unknown>;
+		data?: unknown;
+	},
+	callback?: unknown,
+) => Promise<unknown>;
+
+type AttachmentResponse = {
+	results: { extensions: { fileId: string }; container: { id: string } }[];
 };
 
-type ContentAttachmentsInternal = {
-	client: {
-		sendRequest: (config: unknown, callback?: unknown) => Promise<unknown>;
+function buildMultipartBody(attachment: AttachmentInput): { body: Buffer; contentType: string } {
+	// RFC 2046 boundary — random hex avoids collision with file bytes.
+	const boundary = `----confluence-attachment-${SparkMD5.hash(`${attachment.filename}-${Date.now()}`).slice(0, 16)}`;
+	const dashBoundary = `--${boundary}`;
+	const filePartHeader = Buffer.from(
+		`${dashBoundary}\r\n` +
+			`Content-Disposition: form-data; name="file"; filename="${attachment.filename}"\r\n` +
+			`Content-Type: ${attachment.contentType ?? "application/octet-stream"}\r\n\r\n`,
+	);
+	const trailing = Buffer.from(`\r\n${dashBoundary}--\r\n`);
+	return {
+		body: Buffer.concat([filePartHeader, attachment.file, trailing]),
+		contentType: `multipart/form-data; boundary=${boundary}`,
 	};
-};
-
-function buildAttachmentForm(parameters: CreateOrUpdateParams): FormData {
-	const formData = new FormData();
-	const attachments = Array.isArray(parameters.attachments)
-		? parameters.attachments
-		: [parameters.attachments];
-
-	for (const attachment of attachments) {
-		formData.append("file", attachment.file, {
-			filename: attachment.filename,
-			...(attachment.contentType ? { contentType: attachment.contentType } : {}),
-		});
-		// `comment` is intentionally NOT sent: Confluence Cloud's stricter
-		// validation rejects multipart attachment uploads when the comment
-		// field is present in a form that doesn't fit its expected shape
-		// ("Must be same number of attachment files and comments"). We pay
-		// for this by losing one signal for content-hash dedup of cross-page
-		// attachments — the page-level hash check in uploadBuffer/uploadFile
-		// still works for re-uploads of the same page.
-	}
-
-	return formData;
 }
 
-function patchContentAttachmentsOnce(): void {
-	const proto = Api.ContentAttachments.prototype as unknown as {
-		__minorEditPatched?: boolean;
-		createOrUpdateAttachments: (
-			this: ContentAttachmentsInternal,
-			parameters: CreateOrUpdateParams,
-			callback?: unknown,
-		) => Promise<unknown>;
-		createAttachments: (
-			this: ContentAttachmentsInternal,
-			parameters: CreateOrUpdateParams,
-			callback?: unknown,
-		) => Promise<unknown>;
-	};
-
-	if (proto.__minorEditPatched) {
-		return;
+async function postAttachment(
+	confluenceClient: RequiredConfluenceClient,
+	pageId: string,
+	attachment: AttachmentInput,
+): Promise<AttachmentResponse> {
+	const { body, contentType } = buildMultipartBody(attachment);
+	const internalClient = (
+		confluenceClient.contentAttachments as unknown as {
+			client?: { sendRequest: InternalSendRequest };
+		}
+	).client;
+	if (!internalClient) {
+		throw new Error(
+			"ConfluenceClient.contentAttachments has no underlying transport — incompatible client",
+		);
 	}
-
-	proto.createOrUpdateAttachments = async function (
-		this: ContentAttachmentsInternal,
-		parameters: CreateOrUpdateParams,
-		callback?: unknown,
-	) {
-		const formData = buildAttachmentForm(parameters);
-		const config = {
-			url: `/api/content/${parameters.id}/child/attachment`,
-			method: "PUT",
-			headers: {
-				"X-Atlassian-Token": "no-check",
-				"Content-Type": "multipart/form-data",
-				...formData.getHeaders?.(),
-			},
-			params: { status: parameters.status },
-			data: formData,
-		};
-		return this.client.sendRequest(config, callback);
-	};
-
-	proto.createAttachments = async function (
-		this: ContentAttachmentsInternal,
-		parameters: CreateOrUpdateParams,
-		callback?: unknown,
-	) {
-		const formData = buildAttachmentForm(parameters);
-		const config = {
-			url: `/api/content/${parameters.id}/child/attachment`,
-			method: "POST",
-			headers: {
-				"X-Atlassian-Token": "no-check",
-				"Content-Type": "multipart/form-data",
-				...formData.getHeaders?.(),
-			},
-			params: { status: parameters.status },
-			data: formData,
-		};
-		return this.client.sendRequest(config, callback);
-	};
-
-	proto.__minorEditPatched = true;
+	const result = await internalClient.sendRequest({
+		url: `/api/content/${pageId}/child/attachment`,
+		method: "PUT",
+		headers: {
+			// eslint-disable-next-line @typescript-eslint/naming-convention
+			"X-Atlassian-Token": "no-check",
+			// eslint-disable-next-line @typescript-eslint/naming-convention
+			"Content-Type": contentType,
+		},
+		data: body,
+	});
+	return result as AttachmentResponse;
 }
 
 export type ConfluenceImageStatus = "existing" | "uploaded";
@@ -151,7 +112,6 @@ export async function uploadBuffer(
 		{ filehash: string; attachmentId: string; collectionName: string }
 	>,
 ): Promise<UploadedImageData | null> {
-	patchContentAttachmentsOnce();
 	const spark = new SparkMD5.ArrayBuffer();
 	const currentFileMd5 = spark.append(toArrayBuffer(fileBuffer)).end();
 	const imageSize = await sizeOf(fileBuffer);
@@ -168,20 +128,11 @@ export async function uploadBuffer(
 		};
 	}
 
-	const attachmentDetails = {
-		id: pageId,
-		attachments: [
-			{
-				file: fileBuffer,
-				filename: uploadFilename,
-				comment: currentFileMd5,
-				contentType: "image/png",
-			},
-		],
-	};
-
-	const attachmentResponse =
-		await confluenceClient.contentAttachments.createOrUpdateAttachments(attachmentDetails);
+	const attachmentResponse = await uploadAttachmentWithRetry(confluenceClient, pageId, {
+		file: fileBuffer,
+		filename: uploadFilename,
+		contentType: "image/png",
+	});
 
 	const attachmentUploadResponse = attachmentResponse.results[0];
 	if (!attachmentUploadResponse) {
@@ -198,6 +149,67 @@ export async function uploadBuffer(
 	};
 }
 
+// Confluence Cloud sometimes returns 500 StaleObjectStateException for an
+// attachment upload that actually committed server-side (the post-commit
+// step is what fails). When this happens, re-fetch the attachment list — if
+// our file is now present, treat the original 500 as a deferred success.
+async function uploadAttachmentWithRetry(
+	confluenceClient: RequiredConfluenceClient,
+	pageId: string,
+	attachment: AttachmentInput,
+): Promise<AttachmentResponse> {
+	try {
+		return await postAttachment(confluenceClient, pageId, attachment);
+	} catch (e: unknown) {
+		if (!isStaleObjectError(e)) {
+			throw e;
+		}
+		// Wait briefly so Confluence's read replica catches up to the
+		// just-committed write before we re-fetch.
+		await new Promise((resolve) => setTimeout(resolve, 750));
+		const refreshed = await confluenceClient.contentAttachments.getAttachments({
+			id: pageId,
+		});
+		const found = refreshed.results.find(
+			(a: { title: string }) => a.title === attachment.filename,
+		) as { extensions: { fileId: string } } | undefined;
+		if (!found) {
+			console.log(
+				"Attachment upload returned 500 StaleObjectStateException AND the attachment is not visible on re-fetch — treating as a real failure.",
+			);
+			throw e;
+		}
+		console.log(
+			`Attachment upload returned 500 StaleObjectStateException but ${attachment.filename} is present server-side — treating as success.`,
+		);
+		return {
+			results: [
+				{
+					extensions: { fileId: found.extensions.fileId },
+					container: { id: pageId },
+				},
+			],
+		};
+	}
+}
+
+function isStaleObjectError(e: unknown): boolean {
+	const blobs: string[] = [];
+	if (e instanceof Error) {
+		blobs.push(e.message);
+	}
+	const maybeResponse = (e as { response?: { data?: unknown } }).response;
+	if (maybeResponse?.data && typeof maybeResponse.data === "string") {
+		blobs.push(maybeResponse.data);
+	}
+	const blob = blobs.join(" ");
+	return (
+		blob.includes("StaleObjectStateException") ||
+		blob.includes("more than the previous version") ||
+		blob.includes("optimistic lock")
+	);
+}
+
 export async function uploadFile(
 	confluenceClient: RequiredConfluenceClient,
 	adaptor: LoaderAdaptor,
@@ -206,7 +218,6 @@ export async function uploadFile(
 	fileNameToUpload: string,
 	currentAttachments: CurrentAttachments,
 ): Promise<UploadedImageData | null> {
-	patchContentAttachmentsOnce();
 	let fileNameForUpload = fileNameToUpload;
 	let testing = await adaptor.readBinary(fileNameForUpload, pageFilePath);
 	if (!testing) {
@@ -237,19 +248,10 @@ export async function uploadFile(
 			};
 		}
 
-		const attachmentDetails = {
-			id: pageId,
-			attachments: [
-				{
-					file: imageBuffer,
-					filename: uploadFilename,
-					comment: currentFileMd5,
-				},
-			],
-		};
-
-		const attachmentResponse =
-			await confluenceClient.contentAttachments.createOrUpdateAttachments(attachmentDetails);
+		const attachmentResponse = await uploadAttachmentWithRetry(confluenceClient, pageId, {
+			file: imageBuffer,
+			filename: uploadFilename,
+		});
 
 		const attachmentUploadResponse = attachmentResponse.results[0];
 		if (!attachmentUploadResponse) {
