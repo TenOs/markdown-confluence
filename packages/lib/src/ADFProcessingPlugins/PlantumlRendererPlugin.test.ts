@@ -112,7 +112,7 @@ test("transform returns empty map when nothing to render and skips the renderer"
 	expect(renderer.captured).toHaveLength(0);
 });
 
-test("load replaces matched codeBlocks with mediaSingle and leaves other code blocks untouched", async () => {
+test("load replaces matched codeBlocks with mediaSingle plus a sibling source expand", async () => {
 	const sample = "@startuml\nA -> B\n@enduml";
 	const { uploadFilename } = getPlantumlFileName(sample);
 
@@ -130,9 +130,27 @@ test("load replaces matched codeBlocks with mediaSingle and leaves other code bl
 	const imageMap = await plugin.transform(charts, noopSupportFunctions);
 	const finalAdf = plugin.load(doc, imageMap);
 
-	const content = (finalAdf as unknown as { content: { type: string }[] }).content;
+	const content = (
+		finalAdf as unknown as {
+			content: {
+				type: string;
+				attrs?: { title?: string; language?: string };
+				content?: {
+					type: string;
+					attrs?: { language?: string };
+					content?: { text?: string }[];
+				}[];
+			}[];
+		}
+	).content;
 	expect(content[0]?.type).toBe("mediaSingle");
-	expect(content[1]?.type).toBe("codeBlock");
+	expect(content[1]?.type).toBe("expand");
+	expect(content[1]?.attrs?.title).toBe("source");
+	const innerCodeBlock = content[1]?.content?.[0];
+	expect(innerCodeBlock?.type).toBe("codeBlock");
+	expect(innerCodeBlock?.attrs?.language).toBe("plaintext");
+	expect(innerCodeBlock?.content?.[0]?.text).toBe(sample);
+	expect(content[2]?.type).toBe("codeBlock");
 });
 
 test("load leaves codeBlock alone when imageMap entry missing (e.g. renderer returned nothing)", async () => {
@@ -145,4 +163,106 @@ test("load leaves codeBlock alone when imageMap entry missing (e.g. renderer ret
 	const finalAdf = plugin.load(doc, imageMap);
 	const content = (finalAdf as unknown as { content: { type: string }[] }).content;
 	expect(content[0]?.type).toBe("codeBlock");
+	expect(content).toHaveLength(1);
+});
+
+test("load source expand uses normalized text for bare snippets that get @startuml-wrapped", async () => {
+	const bare = "skinparam monochrome true\nAlice -> Bob";
+	const wrapped = `@startuml\n${bare}\n@enduml`;
+	const { uploadFilename } = getPlantumlFileName(bare);
+
+	const renderer = new StubPlantumlRenderer(
+		new Map<string, Buffer>([[uploadFilename, Buffer.from("png")]]),
+	);
+	const plugin = new PlantumlRendererPlugin(renderer);
+	const doc = makeDoc([{ language: "plantuml", text: bare }]);
+
+	const charts = plugin.extract(doc);
+	const imageMap = await plugin.transform(charts, noopSupportFunctions);
+	const finalAdf = plugin.load(doc, imageMap);
+
+	const content = (
+		finalAdf as unknown as {
+			content: { content?: { content?: { text?: string }[] }[] }[];
+		}
+	).content;
+	expect(content[1]?.content?.[0]?.content?.[0]?.text).toBe(wrapped);
+});
+
+test("load emits one [mediaSingle, expand] pair per matched plantuml code block", async () => {
+	const a = "@startuml\nA -> B\n@enduml";
+	const b = "@startuml\nC -> D\n@enduml";
+	const fileA = getPlantumlFileName(a).uploadFilename;
+	const fileB = getPlantumlFileName(b).uploadFilename;
+	const renderer = new StubPlantumlRenderer(
+		new Map<string, Buffer>([
+			[fileA, Buffer.from("a")],
+			[fileB, Buffer.from("b")],
+		]),
+	);
+	const plugin = new PlantumlRendererPlugin(renderer);
+	const doc = makeDoc([
+		{ language: "plantuml", text: a },
+		{ language: "puml", text: b },
+	]);
+
+	const charts = plugin.extract(doc);
+	const imageMap = await plugin.transform(charts, noopSupportFunctions);
+	const finalAdf = plugin.load(doc, imageMap);
+
+	const content = (finalAdf as unknown as { content: { type: string }[] }).content;
+	expect(content.map((c) => c?.type)).toEqual(["mediaSingle", "expand", "mediaSingle", "expand"]);
+});
+
+test("load splices [mediaSingle, expand] inside a parent container's content (recursion)", async () => {
+	const sample = "@startuml\nA -> B\n@enduml";
+	const { uploadFilename } = getPlantumlFileName(sample);
+	const renderer = new StubPlantumlRenderer(
+		new Map<string, Buffer>([[uploadFilename, Buffer.from("png")]]),
+	);
+	const plugin = new PlantumlRendererPlugin(renderer);
+
+	const doc = {
+		version: 1,
+		type: "doc",
+		content: [
+			{
+				type: "panel",
+				attrs: { panelType: "info" },
+				content: [
+					{
+						type: "codeBlock",
+						attrs: { language: "plantuml" },
+						content: [{ type: "text", text: sample }],
+					},
+				],
+			},
+		],
+	} as unknown as JSONDocNode;
+
+	const charts = plugin.extract(doc);
+	const imageMap = await plugin.transform(charts, noopSupportFunctions);
+	const finalAdf = plugin.load(doc, imageMap);
+
+	const panel = (finalAdf as unknown as { content: { content: { type: string }[] }[] })
+		.content[0];
+	expect(panel?.content[0]?.type).toBe("mediaSingle");
+	expect(panel?.content[1]?.type).toBe("expand");
+});
+
+test("load does not mutate the input ADF", async () => {
+	const sample = "@startuml\nA -> B\n@enduml";
+	const { uploadFilename } = getPlantumlFileName(sample);
+	const renderer = new StubPlantumlRenderer(
+		new Map<string, Buffer>([[uploadFilename, Buffer.from("png")]]),
+	);
+	const plugin = new PlantumlRendererPlugin(renderer);
+	const doc = makeDoc([{ language: "plantuml", text: sample }]);
+	const before = JSON.stringify(doc);
+
+	const charts = plugin.extract(doc);
+	const imageMap = await plugin.transform(charts, noopSupportFunctions);
+	plugin.load(doc, imageMap);
+
+	expect(JSON.stringify(doc)).toBe(before);
 });

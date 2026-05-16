@@ -1,4 +1,4 @@
-import { filter, traverse } from "@atlaskit/adf-utils/traverse";
+import { filter } from "@atlaskit/adf-utils/traverse";
 import { UploadedImageData } from "../Attachments";
 import { JSONDocNode } from "@atlaskit/editor-json-transformer";
 import { ADFProcessingPlugin, ChartData, PublisherFunctions } from "./types";
@@ -94,50 +94,99 @@ export class PlantumlRendererPlugin implements ADFProcessingPlugin<
 	}
 
 	load(adf: JSONDocNode, imageMap: Record<string, UploadedImageData | null>): JSONDocNode {
-		let afterAdf = adf as ADFEntity;
-
-		afterAdf =
-			traverse(afterAdf, {
-				codeBlock: (node, _parent) => {
-					if (!isPlantumlLanguage(node?.attrs?.["language"])) {
-						return;
-					}
-					const plantumlContent = node?.content?.at(0)?.text;
-					if (!plantumlContent) {
-						return;
-					}
-					const plantumlFilename = getPlantumlFileName(plantumlContent);
-
-					if (!imageMap[plantumlFilename.uploadFilename]) {
-						return;
-					}
-					const mappedImage = imageMap[plantumlFilename.uploadFilename];
-					if (mappedImage) {
-						node.type = "mediaSingle";
-						if (node.attrs) {
-							node.attrs["layout"] = "center";
-							delete node.attrs["language"];
-						}
-						if (node.content) {
-							node.content = [
-								{
-									type: "media",
-									attrs: {
-										type: "file",
-										collection: mappedImage.collection,
-										id: mappedImage.id,
-										width: mappedImage.width,
-										height: mappedImage.height,
-									},
-								},
-							];
-						}
-						return node;
-					}
-					return;
-				},
-			}) || afterAdf;
-
-		return afterAdf as JSONDocNode;
+		return walkContent(adf as ADFEntity, imageMap) as JSONDocNode;
 	}
+}
+
+function makeMediaSingle(mappedImage: UploadedImageData): ADFEntity {
+	return {
+		type: "mediaSingle",
+		attrs: { layout: "center" },
+		content: [
+			{
+				type: "media",
+				attrs: {
+					type: "file",
+					collection: mappedImage.collection,
+					id: mappedImage.id,
+					width: mappedImage.width,
+					height: mappedImage.height,
+				},
+			},
+		],
+	};
+}
+
+// "plaintext" (not "plantuml") matches the Confluence reference page and
+// avoids the editor trying to syntax-highlight the source as plantuml.
+function makeSourceExpand(plantumlText: string): ADFEntity {
+	return {
+		type: "expand",
+		attrs: { title: "source" },
+		content: [
+			{
+				type: "codeBlock",
+				attrs: { language: "plaintext" },
+				content: [{ type: "text", text: plantumlText }],
+			},
+		],
+	};
+}
+
+function tryRewritePlantumlCodeBlock(
+	node: ADFEntity,
+	imageMap: Record<string, UploadedImageData | null>,
+): [ADFEntity, ADFEntity] | null {
+	if (node.type !== "codeBlock") {
+		return null;
+	}
+	if (!isPlantumlLanguage(node.attrs?.["language"])) {
+		return null;
+	}
+	const plantumlContent = node.content?.at(0)?.text;
+	if (!plantumlContent) {
+		return null;
+	}
+	const { uploadFilename, plantumlText } = getPlantumlFileName(plantumlContent);
+	const mappedImage = imageMap[uploadFilename];
+	if (!mappedImage) {
+		return null;
+	}
+	return [makeMediaSingle(mappedImage), makeSourceExpand(plantumlText)];
+}
+
+// Synchronous, immutable walk: any subtree with a change is shallow-cloned;
+// untouched subtrees are returned by reference. The traverse() helper from
+// @atlaskit/adf-utils can only return one node per visit, so we walk
+// content arrays directly to splice in [mediaSingle, expand] pairs.
+function walkContent(
+	node: ADFEntity,
+	imageMap: Record<string, UploadedImageData | null>,
+): ADFEntity {
+	if (!Array.isArray(node.content)) {
+		return node;
+	}
+
+	const newContent: (ADFEntity | undefined)[] = [];
+	let mutated = false;
+
+	for (const child of node.content) {
+		if (!child) {
+			newContent.push(child);
+			continue;
+		}
+		const replacementPair = tryRewritePlantumlCodeBlock(child, imageMap);
+		if (replacementPair) {
+			newContent.push(...replacementPair);
+			mutated = true;
+			continue;
+		}
+		const recursed = walkContent(child, imageMap);
+		if (recursed !== child) {
+			mutated = true;
+		}
+		newContent.push(recursed);
+	}
+
+	return mutated ? { ...node, content: newContent } : node;
 }
