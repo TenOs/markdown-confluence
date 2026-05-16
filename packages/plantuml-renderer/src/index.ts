@@ -56,8 +56,8 @@ export class HttpPlantumlRenderer implements PlantumlRenderer {
 			);
 		}
 
-		const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-		if (typeof fetchImpl !== "function") {
+		const rawFetch = options.fetchImpl ?? globalThis.fetch;
+		if (typeof rawFetch !== "function") {
 			throw new Error(
 				"HttpPlantumlRenderer: global fetch is unavailable; pass options.fetchImpl or run on Node 18+",
 			);
@@ -67,7 +67,10 @@ export class HttpPlantumlRenderer implements PlantumlRenderer {
 		this.format = options.format ?? "png";
 		this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		this.concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
-		this.fetchImpl = fetchImpl;
+		// Bind to globalThis so the browser/Electron `fetch` keeps its `this`
+		// when called as a method on the class (otherwise it throws
+		// "Failed to execute 'fetch' on 'Window': Illegal invocation").
+		this.fetchImpl = options.fetchImpl ?? (rawFetch as typeof fetch).bind(globalThis);
 	}
 
 	async capturePlantumlCharts(charts: ChartData[]): Promise<Map<string, Buffer>> {
